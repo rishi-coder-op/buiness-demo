@@ -3,32 +3,36 @@ exports.handler = async (event) => {
   try {
     const { state='Bihar', city='All Bihar', category='Any business', count=50, excludeFood=true } = JSON.parse(event.body || '{}');
     const limit=Math.min(Math.max(Number(count)||50,1),50);
-    const place=city==='All Bihar'?state:`${city}, ${state}`;
-    const wanted=category==='Any business'?['office','lawyer','consultant','doctor','clinic','real estate agency','coaching centre','salon','beauty salon','accountant','architect','engineer','wholesaler','shop']:[category];
-    const queries=wanted.map(x=>`${x} in ${place}`);
+    const areaName=city==='All Bihar'?'Bihar':city;
+    const wanted=category==='Any business'?['office','lawyer','consultant','doctor','clinic','real_estate','coaching','salon','beauty','accountant','architect','engineer','wholesaler','shop']:[category];
     const results=[];
-    for(const q of queries){
+    const seen=new Set();
+    for(const term of wanted){
       if(results.length>=limit) break;
-      const url='https://overpass-api.de/api/interpreter?data='+encodeURIComponent(`[out:json][timeout:25];area["name"="${city==='All Bihar'?'Bihar':city}"][boundary=administrative]->.searchArea;nwr["name"]["${q.split(' ')[0]}"](area.searchArea);out center tags;`);
-      let response=await fetch(url,{headers:{'User-Agent':'WebSalesAI/1.0 lead-finder'}});
-      if(!response.ok){
-        const fallback='https://overpass-api.de/api/interpreter?data='+encodeURIComponent(`[out:json][timeout:25];area["name"="${city==='All Bihar'?'Bihar':city}"][boundary=administrative]->.a;nwr["name"](area.a);out center tags;`);
-        response=await fetch(fallback,{headers:{'User-Agent':'WebSalesAI/1.0 lead-finder'}});
-      }
+      const query=`[out:json][timeout:25];area["name"="${areaName}"][boundary=administrative]->.a;(nwr["name"]["office"~"${term}",i](area.a);nwr["name"]["amenity"~"${term}",i](area.a);nwr["name"]["shop"~"${term}",i](area.a);nwr["name"]["healthcare"~"${term}",i](area.a););out center tags;`;
+      let response;
+      try{response=await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query),{headers:{'User-Agent':'WebSalesAI/1.0'}})}catch{continue}
       if(!response.ok) continue;
-      const data=await response.json();
-      for(const el of (data.elements||[])){
-        const t=el.tags||{};const name=t.name||'';if(!name) continue;
+      let data;try{data=await response.json()}catch{continue}
+      for(const el of(data.elements||[])){
+        const t=el.tags||{};const name=t.name||'';if(!name)continue;
         const text=`${name} ${t.shop||''} ${t.amenity||''} ${t.office||''} ${t.healthcare||''}`;
-        if(excludeFood&&/restaurant|cafe|food|bakery|sweet|dhaba|fast_food/i.test(text)) continue;
-        const id=`osm-${el.type}-${el.id}`;if(results.some(x=>x.id===id))continue;
-        const website=t.website||t['contact:website']||'';const phone=t.phone||t['contact:phone']||'';const address=[t['addr:housenumber'],t['addr:street'],t['addr:suburb'],t['addr:city']].filter(Boolean).join(', ');
-        const reviews=0;const hasWebsite=Boolean(website);const score=Math.min(99,40+(hasWebsite?0:35)+(phone?10:0)+(address?5:0));
-        results.push({id,name,category:t.office||t.amenity||t.shop||category,city,address,phone,website:hasWebsite?'yes':'no',websiteUri:website,reviews,rating:0,mapsUrl:`https://www.openstreetmap.org/${el.type}/${el.id}`,score,status:'new',next:hasWebsite?'Review website, then call':'Verify website, then call'});
+        if(excludeFood&&/restaurant|cafe|food|bakery|sweet|dhaba|fast_food|confectionery/i.test(text))continue;
+        const id=`osm-${el.type}-${el.id}`;if(seen.has(id))continue;seen.add(id);
+        const website=t.website||t['contact:website']||t.url||'';
+        const phone=t.phone||t['contact:phone']||'';
+        const email=t.email||t['contact:email']||'';
+        const whatsapp=t['contact:whatsapp']||'';
+        const social=t['contact:facebook']||t['contact:instagram']||t['contact:twitter']||'';
+        const lat=el.lat??el.center?.lat,lon=el.lon??el.center?.lon;
+        const address=[t['addr:housenumber'],t['addr:street'],t['addr:suburb'],t['addr:city'],t['addr:postcode']].filter(Boolean).join(', ');
+        const hasWebsite=Boolean(website),contactCount=[phone,email,whatsapp,social].filter(Boolean).length;
+        const score=Math.min(99,40+(hasWebsite?0:35)+(phone?10:0)+(email?5:0)+(address?5:0));
+        results.push({id,name,category:t.office||t.amenity||t.shop||t.healthcare||category,city,address,phone,email,whatsapp,social,website:hasWebsite?'yes':'no',websiteUri:website,reviews:0,rating:0,mapsUrl:`https://www.openstreetmap.org/${el.type}/${el.id}`,lat,lon,contactCount,score,status:'new',next:hasWebsite?'Review website, then call':'Verify website, then call'});
         if(results.length>=limit)break;
       }
     }
     results.sort((a,b)=>b.score-a.score);
-    return {statusCode:200,headers:{'Content-Type':'application/json','Cache-Control':'public,max-age=300'},body:JSON.stringify({results:results.slice(0,limit),source:'OpenStreetMap / Overpass API',query:{state,city,category,count:limit}})};
-  } catch(e){ return {statusCode:500,headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||'Lead search failed'})}; }
+    return {statusCode:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store'},body:JSON.stringify({results:results.slice(0,limit),source:'OpenStreetMap / Overpass API',query:{state,city,category,count:limit}})};
+  }catch(e){return {statusCode:500,headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||'Lead search failed'})};}
 };
